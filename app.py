@@ -264,120 +264,62 @@ if run_button:
                         txt = extract_text_from_txt(data)
                 except Exception as e:
                     txt = ""
-                    st.error(f"Failed to extract {name}: {e}")
-                submissions.append(clean_text(txt))
-                meta.append({"filename": name})
-        # google docs placeholder
-        if use_google_docs:
-            st.info("Google Docs processing selected — please see README for API setup. (Not performed here.)")
+# ---------------------------
+# SAFE VALIDATION FOR FUSED RESULTS
+# ---------------------------
 
-        # Show quick preview
-        preview_col, results_col = st.columns([1,2])
-        with preview_col:
-            st.subheader("Preview (first 3)")
-            for i,txt in enumerate(submissions[:3]):
-                st.markdown(f"**{meta[i]['filename']}**")
-                st.write(txt[:400]+"..." if len(txt)>400 else txt)
+def validate_fused_results(fused_results):
+    """
+    Ensures fused_results is a list of tuples in the form:
+    (meta_item, mscore, rscore, fused, triggers)
+    """
+    if fused_results is None:
+        return False, "Pipeline returned None."
 
-        # Transformer inference
-        with st.spinner("Running transformer inference..."):
-            model_probs = hf_predict_batch(submissions, tokenizer, model, batch_size=model_batch)
+    if not isinstance(fused_results, list):
+        return False, f"Expected list but got {type(fused_results)}"
 
-        # Map model label names to canonical ekman-like labels where possible
-        # If the model uses Ekman labels (j-hartmann), they match. For GoEmotions, mapping required (best-effort)
-        def normalize_model_scores(prob_dict):
-            # attempt to map tokens to EKMAN_PLUS; fallback: use keys as-is
-            normalized = {k.lower(): v for k,v in prob_dict.items()}
-            # create reduced mapping for EKMAN_PLUS
-            mapped = {}
-            for e in EKMAN_PLUS:
-                # exact match or synonyms
-                if e in normalized:
-                    mapped[e] = normalized[e]
-                else:
-                    # try synonyms mapping (e.g., joy -> happiness)
-                    synonyms = {
-                        "joy":["joy","happiness","happy","joyful"],
-                        "fear":["fear","afraid","anxiety","anxious"],
-                        "sadness":["sad","sadness","sorrow"],
-                        "anger":["anger","angry","annoy"],
-                        "disgust":["disgust","disgusted"],
-                        "surprise":["surprise","surprised","astonished"],
-                        "shame":["shame","ashamed","embarrass"],
-                        "pride":["pride","proud","accomplish"]
-                    }
-                    val = 0.0
-                    for syn in synonyms.get(e,[]):
-                        val = max(val, normalized.get(syn, 0.0))
-                    mapped[e] = float(val)
-            return mapped
+    if len(fused_results) == 0:
+        return False, "No results were produced."
 
-        model_mapped = [normalize_model_scores(d) for d in model_probs]
+    for idx, item in enumerate(fused_results):
+        if not isinstance(item, (tuple, list)):
+            return False, f"Item {idx} is not a tuple: {item}"
+        if len(item) != 5:
+            return False, f"Item {idx} has {len(item)} elements instead of 5: {item}"
 
-        # Rule-based inference
-        with st.spinner("Running rule-based Ekman scorer..."):
-            rule_results = [rule_score_text(t) for t in submissions]
-            rule_scores = [r[0] for r in rule_results]
-            rule_triggers = [r[1] for r in rule_results]
+    return True, None
 
-        # Fusion and assemble dataframe
-        fused_results = []
-        rows = []
-        for i,(meta_item, mscore, rscore) in enumerate(zip(meta, model_mapped, rule_scores)):
-            fused = fuse_scores(mscore, rscore, weights=(fusion_model_weight, 1-fusion_model_weight))
-            # normalized confidences
-            model_conf = max(mscore.values()) if mscore else 0.0
-            rule_conf = max(rscore.values()) if rscore else 0.0
-            fused_conf = max(fused.values()) if fused else 0.0
-            row = {
-                "filename": meta_item["filename"],
-                "model_conf": float(model_conf),
-                "rule_conf": float(rule_conf),
-                "fused_conf": float(fused_conf),
-                "model_scores": json.dumps(mscore),
-                "rule_scores": json.dumps(rscore),
-                "fused_scores": json.dumps(fused),
-            }
-            rows.append(row)
-            fused_results.append((mscore, rscore, fused, rule_triggers[i]))
 
-        df = pd.DataFrame(rows)
+# Validate before looping
+ok, msg = validate_fused_results(fused_results)
 
-        # Display table and charts
-        with results_col:
-            st.subheader("Results summary")
-            st.dataframe(df[["filename","model_conf","rule_conf","fused_conf"]])
-            st.download_button("Export CSV", df.to_csv(index=False), file_name=f"ctlearner_results_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv")
-            # Excel
-            towrite = io.BytesIO()
-            with pd.ExcelWriter(towrite, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name="results")
-            st.download_button("Export Excel", towrite.getvalue(), file_name=f"ctlearner_results_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx")
+if not ok:
+    st.error(f"❌ Processing error: {msg}")
+    st.info("Please reupload valid text files or check earlier steps.")
+    st.stop()
 
-        # Per-file detailed view
-        st.markdown("---")
-        st.header("Detailed per-submission analysis")
-        # Safety check before unpacking
-        if not fused_results or not isinstance(fused_results, list):
-            st.error("No results were produced. Please check your inputs or upload text-based files.")
-            st.stop()
+# ---------------------------
+# SAFE LOOP
+# ---------------------------
 
-        for i,(meta_item, mscore, rscore, fused, triggers) in enumerate(fused_results):
-            st.subheader(meta_item["filename"])
-            cols = st.columns([1,1,1])
-            labels = list(fused.keys())
-            # Show bar charts as DataFrame (Streamlit handles visuals)
-            df_viz = pd.DataFrame({
-                "emotion": labels,
-                "model": [mscore.get(l,0.0) for l in labels],
-                "rule": [rscore.get(l,0.0) for l in labels],
-                "fused":[fused.get(l,0.0) for l in labels]
-            })
-            st.table(df_viz)
-            st.markdown("**Top model emotions (sorted):**")
-            for k,v in sorted(mscore.items(), key=lambda x:-x[1])[:3]:
-                st.write(f"{k}: {v:.3f}")
-            st.markdown("**Top rule emotions (sorted):**")
+for i, (meta_item, mscore, rscore, fused, triggers) in enumerate(fused_results):
+    st.subheader(f"📄 Document {i+1}: {meta_item.get('filename', 'Untitled')}")
+    st.write(f"**Extracted Text Preview:** {meta_item.get('text','')[:300]}...")
+    st.write("---")
+
+    st.write("### 🔥 Transformer Model Scores")
+    st.json(mscore)
+
+    st.write("### 🧠 Ekman Rule-Based Scores")
+    st.json(rscore)
+
+    st.write("### 🔗 Fused / Ensemble Scores")
+    st.json(fused)
+
+    st.write("### 🖍 Emotion Triggers (Explanation)")
+    st.json(triggers)
+
             for k,v in sorted(rscore.items(), key=lambda x:-abs(x[1]))[:3]:
                 st.write(f"{k}: {v:.3f}")
             st.markdown("**Fused top:**")
