@@ -1,12 +1,8 @@
-streamlit>=1.20
+streamlit>=1.22
 transformers>=4.30
 torch>=2.0
 pdfplumber>=0.7.8
 python-docx>=0.8.11
 pandas>=2.0
 openpyxl>=3.1
-openai>=0.27.0   # optional, remove if not using
-google-api-python-client>=2.70.0  # optional, for Google Docs integration
-google-auth>=2.21.0  # optional
-pdfminer.six>=20240726
-sentencepiece>=0.1.99
+regex>=2023.8.8
