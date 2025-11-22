@@ -357,6 +357,11 @@ if run_button:
         # Per-file detailed view
         st.markdown("---")
         st.header("Detailed per-submission analysis")
+        # Safety check before unpacking
+        if not fused_results or not isinstance(fused_results, list):
+            st.error("No results were produced. Please check your inputs or upload text-based files.")
+            st.stop()
+
         for i,(meta_item, mscore, rscore, fused, triggers) in enumerate(fused_results):
             st.subheader(meta_item["filename"])
             cols = st.columns([1,1,1])
